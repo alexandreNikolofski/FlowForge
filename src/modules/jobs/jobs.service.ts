@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { JOB_PRIORITY, JOB_STATUS, JOB_RETRY_DELAYS_MS } from './jobs.constants';
+import { register, Counter } from 'prom-client';
 import { JobPriority, JobType } from './jobs.types';
 import { normalizeStatus } from './jobs.utils';
 
@@ -17,6 +18,11 @@ export interface CreateJobDto {
 
 @Injectable()
 export class JobsService {
+  // @ts-ignore
+  private jobsCreatedCounter: Counter<string> =
+    (register.getSingleMetric('flowforge_jobs_created_total') as Counter<string>) ??
+    new Counter({ name: 'flowforge_jobs_created_total', help: 'Total number of created jobs' });
+
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue('jobs') private readonly jobsQueue: Queue,
@@ -34,16 +40,30 @@ export class JobsService {
       }
     }
 
-    const job = await this.prisma.job.create({
-      data: {
-        type: createJobDto.type,
-        priority: createJobDto.priority ?? JOB_PRIORITY.NORMAL,
-        payload: createJobDto.payload as Prisma.InputJsonValue,
-        scheduledAt: createJobDto.scheduledAt ? new Date(createJobDto.scheduledAt) : null,
-        idempotencyKey: createJobDto.idempotencyKey,
-        status: JOB_STATUS.WAITING,
-      },
-    });
+    let job;
+    try {
+      job = await this.prisma.job.create({
+        data: {
+          type: createJobDto.type,
+          priority: createJobDto.priority ?? JOB_PRIORITY.NORMAL,
+          payload: createJobDto.payload as Prisma.InputJsonValue,
+          scheduledAt: createJobDto.scheduledAt ? new Date(createJobDto.scheduledAt) : null,
+          idempotencyKey: createJobDto.idempotencyKey,
+          status: JOB_STATUS.WAITING,
+        },
+      });
+    } catch (err: any) {
+      // Handle unique constraint violation for idempotency key (Prisma P2002)
+      if (err?.code === 'P2002' && createJobDto.idempotencyKey) {
+        const existing = await this.prisma.job.findFirst({ where: { idempotencyKey: createJobDto.idempotencyKey } });
+        if (existing) return existing;
+      }
+      throw err;
+    }
+
+    // Increment created counter
+    // @ts-ignore
+    this.jobsCreatedCounter.inc();
 
     await this.jobsQueue.add(
       'process-job',
