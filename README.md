@@ -34,7 +34,7 @@ When a job exhausts its retry budget, it is moved to a dedicated Dead Letter Que
 
 ### 7. Observability and production readiness
 
-This project exposes Prometheus metrics and is designed to integrate cleanly with Grafana and OpenTelemetry. That matters because production backend systems are judged not only by code quality, but by how observable they are during incidents and scale events.
+This project exposes Prometheus metrics and is designed to integrate cleanly with Grafana. OpenTelemetry distributed tracing is planned and documented in the roadmap once core logic and observability are stable. That matters because production backend systems are judged not only by code quality, but by how observable they are during incidents and scale events.
 
 ## Project structure
 
@@ -219,7 +219,7 @@ GET /jobs/dlq
 - Docker
 - Terraform
 - AWS
-- OpenTelemetry
+- OpenTelemetry (planned)
 - Prometheus
 - Grafana
 - Jest
@@ -266,7 +266,7 @@ This project is intentionally built as a strong foundation for future growth. Th
 
 ## Summary
 
-FlowForge is more than a job queue demo. It is a backend platform designed to show how modern asynchronous systems are structured: API, queue, workers, persistence, retries, observability, and operational safety. It is a strong project for a portfolio because it demonstrates that the author can think beyond CRUD and design systems that are resilient, scalable, and ready for production.
+FlowForge demonstrates a production-oriented approach to asynchronous backend systems, combining API orchestration, Redis-backed queues, background workers, PostgreSQL persistence, retries, idempotency, dead-letter handling and observability. The architecture is intentionally modular so additional workloads, workers and integrations can be introduced without changing the core job-processing model.
 
 ## Concurrency & Reliability
 
