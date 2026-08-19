@@ -8,38 +8,31 @@ import { register, Counter, Histogram } from 'prom-client';
 @Processor('jobs')
 @Injectable()
 export class JobsProcessor extends WorkerHost {
+  // Metrics (created once per processor instance)
+  private readonly completedCounter: Counter<string>;
+  private readonly failedCounter: Counter<string>;
+  private readonly processingDuration: Histogram<string>;
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue('jobs-dlq') private readonly deadLetterQueue: Queue,
   ) {
     super();
-  }
 
-  // Configure worker concurrency via environment variable `WORKER_CONCURRENCY`.
-  // Defaults to 10 if not provided.
-  getWorkerOptions() {
-    const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 10);
-    return { concurrency } as any;
+    // Initialize metrics once
+    // @ts-ignore
+    this.completedCounter = (register.getSingleMetric('flowforge_jobs_completed_total') as Counter<string>) ?? new Counter({ name: 'flowforge_jobs_completed_total', help: 'Total number of completed jobs' });
+    // @ts-ignore
+    this.failedCounter = (register.getSingleMetric('flowforge_jobs_failed_total') as Counter<string>) ?? new Counter({ name: 'flowforge_jobs_failed_total', help: 'Total number of failed jobs' });
+    // @ts-ignore
+    this.processingDuration = (register.getSingleMetric('flowforge_job_processing_duration_seconds') as Histogram<string>) ?? new Histogram({ name: 'flowforge_job_processing_duration_seconds', help: 'Job processing duration in seconds' });
   }
 
   async process(job: Job): Promise<unknown> {
     const { id, type, payload } = job.data;
 
-    // Metrics: ensure counters/histogram are created only once
-    // @ts-ignore
-    const completedCounter: Counter<string> =
-      (register.getSingleMetric('flowforge_jobs_completed_total') as Counter<string>) ??
-      new Counter({ name: 'flowforge_jobs_completed_total', help: 'Total number of completed jobs' });
-    // @ts-ignore
-    const failedCounter: Counter<string> =
-      (register.getSingleMetric('flowforge_jobs_failed_total') as Counter<string>) ??
-      new Counter({ name: 'flowforge_jobs_failed_total', help: 'Total number of failed jobs' });
-    // @ts-ignore
-    const processingDuration: Histogram<string> =
-      (register.getSingleMetric('flowforge_job_processing_duration_seconds') as Histogram<string>) ??
-      new Histogram({ name: 'flowforge_job_processing_duration_seconds', help: 'Job processing duration in seconds' });
-
     const startedAt = Date.now();
+
+    
 
     await this.prisma.job.update({
       where: { id },
@@ -69,10 +62,8 @@ export class JobsProcessor extends WorkerHost {
           });
 
           // Metrics: mark completed and record processing duration
-          // @ts-ignore
-          completedCounter.inc();
-          // @ts-ignore
-          processingDuration.observe((Date.now() - startedAt) / 1000);
+          this.completedCounter.inc();
+          this.processingDuration.observe((Date.now() - startedAt) / 1000);
 
           return {
             ok: true,
@@ -106,8 +97,7 @@ export class JobsProcessor extends WorkerHost {
         // nothing else: BullMQ will schedule retry according to its attempts/backoff config
       } else {
         // final failure -> push to DLQ
-        // @ts-ignore
-        failedCounter.inc();
+        this.failedCounter.inc();
 
         await this.deadLetterQueue.add(
           'dead-letter-job',
@@ -126,8 +116,7 @@ export class JobsProcessor extends WorkerHost {
       }
 
       // observe processing duration
-      // @ts-ignore
-      processingDuration.observe((Date.now() - startedAt) / 1000);
+      this.processingDuration.observe((Date.now() - startedAt) / 1000);
 
       throw error;
     }
