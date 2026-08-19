@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { Queue, Job } from 'bullmq';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { JOB_RETRY_DELAYS_MS, JOB_STATUS, MAX_JOB_ATTEMPTS } from './jobs.constants';
+import { register, Counter, Histogram } from 'prom-client';
 
 @Processor('jobs')
 @Injectable()
@@ -23,6 +24,22 @@ export class JobsProcessor extends WorkerHost {
 
   async process(job: Job): Promise<unknown> {
     const { id, type, payload } = job.data;
+
+    // Metrics: ensure counters/histogram are created only once
+    // @ts-ignore
+    const completedCounter: Counter<string> =
+      (register.getSingleMetric('flowforge_jobs_completed_total') as Counter<string>) ??
+      new Counter({ name: 'flowforge_jobs_completed_total', help: 'Total number of completed jobs' });
+    // @ts-ignore
+    const failedCounter: Counter<string> =
+      (register.getSingleMetric('flowforge_jobs_failed_total') as Counter<string>) ??
+      new Counter({ name: 'flowforge_jobs_failed_total', help: 'Total number of failed jobs' });
+    // @ts-ignore
+    const processingDuration: Histogram<string> =
+      (register.getSingleMetric('flowforge_job_processing_duration_seconds') as Histogram<string>) ??
+      new Histogram({ name: 'flowforge_job_processing_duration_seconds', help: 'Job processing duration in seconds' });
+
+    const startedAt = Date.now();
 
     await this.prisma.job.update({
       where: { id },
@@ -51,6 +68,12 @@ export class JobsProcessor extends WorkerHost {
             },
           });
 
+          // Metrics: mark completed and record processing duration
+          // @ts-ignore
+          completedCounter.inc();
+          // @ts-ignore
+          processingDuration.observe((Date.now() - startedAt) / 1000);
+
           return {
             ok: true,
             type,
@@ -62,42 +85,55 @@ export class JobsProcessor extends WorkerHost {
           throw new Error(`Unsupported job type: ${String(type)}`);
       }
     } catch (error) {
-      const persistedAttempt =
-        (await this.prisma.job.findUnique({ where: { id }, select: { attempts: true } }))?.attempts ?? 0;
-      const shouldRetry = persistedAttempt < MAX_JOB_ATTEMPTS;
       const message = error instanceof Error ? error.message : 'Unknown processing error';
+
+      // Determine whether BullMQ will retry this job based on job attempts
+      const attemptsConfigured = Number(job.opts?.attempts ?? 1);
+      const attemptsMade = Number(job.attemptsMade ?? 0);
+      const willRetry = attemptsMade + 1 < attemptsConfigured;
 
       await this.prisma.job.update({
         where: { id },
         data: {
-          status: shouldRetry ? JOB_STATUS.RETRYING : JOB_STATUS.FAILED,
+          status: willRetry ? JOB_STATUS.RETRYING : JOB_STATUS.FAILED,
           errorMessage: message,
-          completedAt: shouldRetry ? null : new Date(),
+          completedAt: willRetry ? null : new Date(),
         },
       });
 
-      if (shouldRetry) {
-        const delay =
-          JOB_RETRY_DELAYS_MS[Math.min(persistedAttempt - 1, JOB_RETRY_DELAYS_MS.length - 1)] ?? 1000;
-        throw new Error(`Retry scheduled for ${delay}ms`);
+      // Record metrics
+      if (willRetry) {
+        // nothing else: BullMQ will schedule retry according to its attempts/backoff config
+      } else {
+        // final failure -> push to DLQ
+        // @ts-ignore
+        failedCounter.inc();
+
+        await this.deadLetterQueue.add(
+          'dead-letter-job',
+          {
+            originalJobId: id,
+            type,
+            payload,
+            failedAt: new Date().toISOString(),
+            reason: message,
+          },
+          {
+            jobId: `dlq-${id}`,
+            removeOnComplete: true,
+          },
+        );
       }
 
-      await this.deadLetterQueue.add(
-        'dead-letter-job',
-        {
-          originalJobId: id,
-          type,
-          payload,
-          failedAt: new Date().toISOString(),
-          reason: message,
-        },
-        {
-          jobId: `dlq-${id}`,
-          removeOnComplete: true,
-        },
-      );
+      // observe processing duration
+      // @ts-ignore
+      processingDuration.observe((Date.now() - startedAt) / 1000);
 
       throw error;
+    }
+    finally {
+      // On success metrics are handled above; ensure duration recorded on success path
+      // (no-op here because success path recorded it explicitly)
     }
   }
 }

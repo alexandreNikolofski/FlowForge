@@ -4,7 +4,7 @@ FlowForge is a distributed job processing platform built with NestJS, PostgreSQL
 
 ## Why this project exists
 
-FlowForge is a production-oriented distributed job processing platform designed around asynchronous execution, reliability, observability, and operational recovery. It focuses on the real concerns of a production-ready async backend: queueing, workers, retries, persistence, observability, and scalability.
+FlowForge is a production-oriented distributed job processing platform designed around asynchronous execution, reliability, observability, and operational recovery. It focuses on the real concerns of a production-oriented async backend: queueing, workers, retries, persistence, observability, and scalability.
 
 ## Architecture decisions
 
@@ -224,23 +224,11 @@ GET /jobs/dlq
 - Grafana
 - Jest
 - Supertest
- - NestJS
- - TypeScript
- - PostgreSQL
- - Prisma
- - Redis
- - BullMQ
- - Docker
- - Terraform
- - AWS
- - Prometheus
- - Grafana
- - Jest
- - Supertest
+
 
 ## Production infrastructure and operational layers
 
-The repository was designed to represent how a production-ready asynchronous backend is operated:
+The repository was designed to represent how a production-oriented asynchronous backend is operated:
 
 - Docker Compose orchestrates PostgreSQL, Redis, the API, and the workers.
 - Prometheus collects service metrics.
